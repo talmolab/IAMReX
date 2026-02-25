@@ -13,6 +13,7 @@
 #include <AMReX_MLNodeLaplacian.H>
 #include <AMReX_FillPatchUtil.H>
 #include <iamr_constants.H>
+#include "ExternalGeometry.H"
 
 #include <filesystem>
 #include <sstream>
@@ -37,6 +38,13 @@ namespace ParticleProperties{
     Vector<Real> _radius2;
     Vector<Real> _radius3;
     Vector<int> _geometry_type;
+    // External geometry support (geometry_type = 4)
+    std::string geometry_file;
+    Real hinge_x{0.0}, hinge_y{0.0}, hinge_z{0.0};
+    int do_prescribed_motion{0};
+    Real kinematics_frequency{600.0};
+    Real kinematics_stroke_amp{70.0};
+    Real kinematics_pitch_amp{45.0};
     Real rd{0.0};
     Vector<int> TLX{}, TLY{},TLZ{},RLX{},RLY{},RLZ{};
     int euler_finest_level{0};
@@ -453,28 +461,60 @@ void mParticle::InitParticles(const Vector<Real>& x,
         }
         mKernel.Vp = Math::pi<Real>() * 4 / 3 * Math::powi<3>(radius[real_index]);
 
-        //int Ml = static_cast<int>( Math::pi<Real>() / 3 * (12 * Math::powi<2>(mKernel.radius / h)));
-        //Real dv = Math::pi<Real>() * h / 3 / Ml * (12 * mKernel.radius * mKernel.radius + h * h);
-        int Ml = static_cast<int>((amrex::Math::powi<3>(mKernel.radius - (ParticleProperties::rd - 0.5) * h)
-               - amrex::Math::powi<3>(mKernel.radius - (ParticleProperties::rd + 0.5) * h))/(3.*h*h*h/4./Math::pi<Real>()));
-        Real dv = (amrex::Math::powi<3>(mKernel.radius - (ParticleProperties::rd - 0.5) * h)
-               - amrex::Math::powi<3>(mKernel.radius - (ParticleProperties::rd + 0.5) * h))/(3.*Ml/4./Math::pi<Real>());
+        int Ml;
+        Real dv;
+
+        if (mKernel.geometry_type == 4) {
+            // External geometry from vertex file
+            IAMReX::ExternalGeometryData ext_data;
+            ext_data.geometry_file = ParticleProperties::geometry_file;
+            ext_data.hinge = amrex::RealVect(
+                ParticleProperties::hinge_x,
+                ParticleProperties::hinge_y,
+                ParticleProperties::hinge_z
+            );
+            ext_data.do_prescribed_motion = (ParticleProperties::do_prescribed_motion != 0);
+            ext_data.kinematics.frequency = ParticleProperties::kinematics_frequency;
+            ext_data.kinematics.stroke_amplitude = ParticleProperties::kinematics_stroke_amp;
+            ext_data.kinematics.pitch_amplitude = ParticleProperties::kinematics_pitch_amp;
+
+            // Initialize from vertex file
+            amrex::RealVect center(x[index], y[index], z[index]);
+            IAMReX::InitializeExternalGeometry(ext_data, center, 1.0);
+
+            // Store for later use
+            IAMReX::g_external_geometries.push_back(ext_data);
+
+            // Set marker count from file
+            Ml = ext_data.num_markers;
+            dv = h * h * h;  // Approximate marker volume
+
+            // For external geometry, we don't use phiK/thetaK - leave them empty
+            // InitialWithLargrangianPoints will use the stored positions instead
+        } else {
+            // Original sphere-based marker calculation
+            Ml = static_cast<int>((amrex::Math::powi<3>(mKernel.radius - (ParticleProperties::rd - 0.5) * h)
+                   - amrex::Math::powi<3>(mKernel.radius - (ParticleProperties::rd + 0.5) * h))/(3.*h*h*h/4./Math::pi<Real>()));
+            dv = (amrex::Math::powi<3>(mKernel.radius - (ParticleProperties::rd - 0.5) * h)
+                   - amrex::Math::powi<3>(mKernel.radius - (ParticleProperties::rd + 0.5) * h))/(3.*Ml/4./Math::pi<Real>());
+
+            Real phiK = 0;
+            for(int marker_index = 0; marker_index < Ml; marker_index++){
+                Real Hk = -1.0 + 2.0 * (marker_index) / ( Ml - 1.0);
+                Real thetaK = std::acos(Hk);
+                if(marker_index == 0 || marker_index == (Ml - 1)){
+                    phiK = 0;
+                }else {
+                    phiK = std::fmod( phiK + 3.809 / std::sqrt(Ml) / std::sqrt( 1 - Math::powi<2>(Hk)) , 2 * Math::pi<Real>());
+                }
+                mKernel.phiK.push_back(phiK);
+                mKernel.thetaK.push_back(thetaK);
+            }
+        }
+
         mKernel.ml = Ml;
         mKernel.dv = dv;
         if( Ml > max_largrangian_num ) max_largrangian_num = Ml;
-
-        Real phiK = 0;
-        for(int marker_index = 0; marker_index < Ml; marker_index++){
-            Real Hk = -1.0 + 2.0 * (marker_index) / ( Ml - 1.0);
-            Real thetaK = std::acos(Hk);    
-            if(marker_index == 0 || marker_index == (Ml - 1)){
-                phiK = 0;
-            }else {
-                phiK = std::fmod( phiK + 3.809 / std::sqrt(Ml) / std::sqrt( 1 - Math::powi<2>(Hk)) , 2 * Math::pi<Real>());
-            }
-            mKernel.phiK.push_back(phiK);
-            mKernel.thetaK.push_back(thetaK);
-        }
 
         particle_kernels.emplace_back(mKernel);
 
@@ -490,25 +530,69 @@ void mParticle::InitParticles(const Vector<Real>& x,
 void mParticle::InitialWithLargrangianPoints(const kernel& current_kernel){
 
     if (verbose) amrex::Print() << "mParticle::InitialWithLargrangianPoints\n";
-    for(mParIter pti(*mContainer, LOCAL_LEVEL); pti.isValid(); ++pti){
-        const Long np = pti.numParticles();
-        if(np == 0) continue;
-        auto *particles = pti.GetArrayOfStructs().data();
 
-        const auto location = current_kernel.location;
-        const auto radius = current_kernel.radius;
-        const auto* phiK = current_kernel.phiK.dataPtr();
-        const auto* thetaK = current_kernel.thetaK.dataPtr();
-
-        amrex::ParallelFor( np, [=]
-            AMREX_GPU_DEVICE (int i) noexcept {
-                auto id = particles[i].id();
-                particles[i].pos(0) = location[0] + radius * std::sin(thetaK[id - 1]) * std::cos(phiK[id - 1]);
-                particles[i].pos(1) = location[1] + radius * std::sin(thetaK[id - 1]) * std::sin(phiK[id - 1]);
-                particles[i].pos(2) = location[2] + radius * std::cos(thetaK[id - 1]);
+    // For external geometry (type 4), use stored positions from vertex file
+    if (current_kernel.geometry_type == 4) {
+        // Find matching external geometry data by marker count
+        int ext_idx = -1;
+        for (size_t i = 0; i < IAMReX::g_external_geometries.size(); ++i) {
+            if (IAMReX::g_external_geometries[i].num_markers == current_kernel.ml) {
+                ext_idx = static_cast<int>(i);
+                break;
             }
-        );
+        }
+
+        if (ext_idx < 0) {
+            amrex::Print() << "ERROR: External geometry data not found for kernel with ml="
+                           << current_kernel.ml << "\n";
+            amrex::Abort("External geometry data not found");
+        }
+
+        auto& ext_data = IAMReX::g_external_geometries[ext_idx];
+        const auto* pos_x = ext_data.pos_x.dataPtr();
+        const auto* pos_y = ext_data.pos_y.dataPtr();
+        const auto* pos_z = ext_data.pos_z.dataPtr();
+        const int num_markers = ext_data.num_markers;
+
+        for(mParIter pti(*mContainer, LOCAL_LEVEL); pti.isValid(); ++pti){
+            const Long np = pti.numParticles();
+            if(np == 0) continue;
+            auto *particles = pti.GetArrayOfStructs().data();
+
+            amrex::ParallelFor(np, [=]
+                AMREX_GPU_DEVICE (int i) noexcept {
+                    auto id = particles[i].id();
+                    if (id > 0 && id <= num_markers) {
+                        particles[i].pos(0) = pos_x[id - 1];
+                        particles[i].pos(1) = pos_y[id - 1];
+                        particles[i].pos(2) = pos_z[id - 1];
+                    }
+                }
+            );
+        }
+    } else {
+        // Original sphere-based positioning using phi/theta angles
+        for(mParIter pti(*mContainer, LOCAL_LEVEL); pti.isValid(); ++pti){
+            const Long np = pti.numParticles();
+            if(np == 0) continue;
+            auto *particles = pti.GetArrayOfStructs().data();
+
+            const auto location = current_kernel.location;
+            const auto radius = current_kernel.radius;
+            const auto* phiK = current_kernel.phiK.dataPtr();
+            const auto* thetaK = current_kernel.thetaK.dataPtr();
+
+            amrex::ParallelFor( np, [=]
+                AMREX_GPU_DEVICE (int i) noexcept {
+                    auto id = particles[i].id();
+                    particles[i].pos(0) = location[0] + radius * std::sin(thetaK[id - 1]) * std::cos(phiK[id - 1]);
+                    particles[i].pos(1) = location[1] + radius * std::sin(thetaK[id - 1]) * std::sin(phiK[id - 1]);
+                    particles[i].pos(2) = location[2] + radius * std::cos(thetaK[id - 1]);
+                }
+            );
+        }
     }
+
     // Redistribute the markers after updating their locations
     mContainer->Redistribute();
     if (verbose) {
@@ -795,6 +879,13 @@ void mParticle::UpdateParticles(int iStep,
     if (verbose) amrex::Print() << "mParticle::UpdateParticles\n";
     // start record
     auto UpdateParticlesStart = ParallelDescriptor::second();
+
+    // Update prescribed motion for external geometries (geometry_type = 4)
+    for (auto& ext_data : IAMReX::g_external_geometries) {
+        if (ext_data.do_prescribed_motion) {
+            IAMReX::UpdateExternalGeometryPositions(ext_data, time);
+        }
+    }
 
     //Particle Collision calculation
     DoParticleCollision(ParticleProperties::collision_model);
@@ -1277,6 +1368,15 @@ void Particles::Initialize()
         p_file.queryarr("radius2",   ParticleProperties::_radius2);
         p_file.queryarr("radius3",   ParticleProperties::_radius3);
         p_file.queryarr("geometry_type", ParticleProperties::_geometry_type);
+        // External geometry parameters (geometry_type = 4)
+        p_file.query("geometry_file", ParticleProperties::geometry_file);
+        p_file.query("hinge_x", ParticleProperties::hinge_x);
+        p_file.query("hinge_y", ParticleProperties::hinge_y);
+        p_file.query("hinge_z", ParticleProperties::hinge_z);
+        p_file.query("do_prescribed_motion", ParticleProperties::do_prescribed_motion);
+        p_file.query("kinematics_frequency", ParticleProperties::kinematics_frequency);
+        p_file.query("kinematics_stroke_amp", ParticleProperties::kinematics_stroke_amp);
+        p_file.query("kinematics_pitch_amp", ParticleProperties::kinematics_pitch_amp);
         p_file.query("RD",          ParticleProperties::rd);
         p_file.query("LOOP_NS",     ParticleProperties::loop_ns);
         p_file.query("LOOP_SOLID",  ParticleProperties::loop_solid);
