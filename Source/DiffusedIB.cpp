@@ -187,6 +187,31 @@ void calculate_phi_nodal(MultiFab& phi_nodal, kernel& current_kernel)
 
                 }
             );
+        } else if (geometry_type == 4) {
+            // Nearest-marker signed distance field for external vertex-file geometry
+            int ext_idx = -1;
+            for (std::size_t ei = 0; ei < IAMReX::g_external_geometries.size(); ++ei) {
+                if (IAMReX::g_external_geometries[ei].num_markers == current_kernel.ml) {
+                    ext_idx = static_cast<int>(ei);
+                    break;
+                }
+            }
+            if (ext_idx < 0) {
+                amrex::Abort("calculate_phi_nodal: external geometry data not found for geometry_type=4");
+            }
+            const auto* px = IAMReX::g_external_geometries[ext_idx].pos_x.dataPtr();
+            const auto* py = IAMReX::g_external_geometries[ext_idx].pos_y.dataPtr();
+            const auto* pz = IAMReX::g_external_geometries[ext_idx].pos_z.dataPtr();
+            const int nm = IAMReX::g_external_geometries[ext_idx].num_markers;
+            amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) noexcept {
+                Real Xn = i*dx[0]+plo[0], Yn = j*dx[1]+plo[1], Zn = k*dx[2]+plo[2];
+                Real min_d = Real(1.e10);
+                for (int m = 0; m < nm; ++m) {
+                    Real d2 = (Xn-px[m])*(Xn-px[m]) + (Yn-py[m])*(Yn-py[m]) + (Zn-pz[m])*(Zn-pz[m]);
+                    min_d = amrex::min(min_d, std::sqrt(d2));
+                }
+                pnfab(i,j,k) = (min_d - dx[0]) / a;
+            });
         } else if (geometry_type > 2) {
             amrex::Print() << "Particle (" << current_kernel.id << ") has unsupported geometry_type: " << geometry_type << "\n";
             amrex::Abort("Unsupported geometry type. Only geometry_type = 1 (sphere) and 2 (ellipsoid) are supported.");

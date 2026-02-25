@@ -111,10 +111,16 @@ inline void InitializeExternalGeometry(
     data.pos_y.resize(data.num_markers);
     data.pos_z.resize(data.num_markers);
 
-    for (int i = 0; i < data.num_markers; ++i) {
-        data.pos_x[i] = data.reference_positions[i][0];
-        data.pos_y[i] = data.reference_positions[i][1];
-        data.pos_z[i] = data.reference_positions[i][2];
+    {
+        amrex::Vector<amrex::Real> hx(data.num_markers), hy(data.num_markers), hz(data.num_markers);
+        for (int i = 0; i < data.num_markers; ++i) {
+            hx[i] = data.reference_positions[i][0];
+            hy[i] = data.reference_positions[i][1];
+            hz[i] = data.reference_positions[i][2];
+        }
+        amrex::Gpu::copy(amrex::Gpu::hostToDevice, hx.begin(), hx.end(), data.pos_x.begin());
+        amrex::Gpu::copy(amrex::Gpu::hostToDevice, hy.begin(), hy.end(), data.pos_y.begin());
+        amrex::Gpu::copy(amrex::Gpu::hostToDevice, hz.begin(), hz.end(), data.pos_z.begin());
     }
 
     amrex::Print() << "Initialized external geometry with " << data.num_markers
@@ -150,11 +156,17 @@ inline void UpdateExternalGeometryPositions(
         data.current_positions
     );
 
-    // Copy to GPU vectors
-    for (int i = 0; i < data.num_markers; ++i) {
-        data.pos_x[i] = data.current_positions[i][0];
-        data.pos_y[i] = data.current_positions[i][1];
-        data.pos_z[i] = data.current_positions[i][2];
+    // Copy to GPU vectors using bulk transfer
+    {
+        amrex::Vector<amrex::Real> hx(data.num_markers), hy(data.num_markers), hz(data.num_markers);
+        for (int i = 0; i < data.num_markers; ++i) {
+            hx[i] = data.current_positions[i][0];
+            hy[i] = data.current_positions[i][1];
+            hz[i] = data.current_positions[i][2];
+        }
+        amrex::Gpu::copy(amrex::Gpu::hostToDevice, hx.begin(), hx.end(), data.pos_x.begin());
+        amrex::Gpu::copy(amrex::Gpu::hostToDevice, hy.begin(), hy.end(), data.pos_y.begin());
+        amrex::Gpu::copy(amrex::Gpu::hostToDevice, hz.begin(), hz.end(), data.pos_z.begin());
     }
 }
 
