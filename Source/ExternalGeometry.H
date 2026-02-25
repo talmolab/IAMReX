@@ -37,9 +37,9 @@ struct ExternalGeometryData {
     amrex::RealVect hinge{0.0, 0.0, 0.0};
     amrex::Vector<amrex::RealVect> reference_positions;
     amrex::Vector<amrex::RealVect> current_positions;
-    amrex::Gpu::DeviceVector<amrex::Real> pos_x;  // For GPU access
-    amrex::Gpu::DeviceVector<amrex::Real> pos_y;
-    amrex::Gpu::DeviceVector<amrex::Real> pos_z;
+    amrex::Gpu::PinnedVector<amrex::Real> pos_x;  // Pinned memory: host-writeable, GPU-readable
+    amrex::Gpu::PinnedVector<amrex::Real> pos_y;
+    amrex::Gpu::PinnedVector<amrex::Real> pos_z;
     WingKinematicsParams kinematics;
     bool do_prescribed_motion = false;
     int num_markers = 0;
@@ -106,21 +106,14 @@ inline void InitializeExternalGeometry(
     // Initialize current positions to reference
     data.current_positions = data.reference_positions;
 
-    // Copy to GPU vectors for parallel access
+    // Fill pinned host arrays (accessible from both CPU and GPU; no explicit copy needed)
     data.pos_x.resize(data.num_markers);
     data.pos_y.resize(data.num_markers);
     data.pos_z.resize(data.num_markers);
-
-    {
-        amrex::Vector<amrex::Real> hx(data.num_markers), hy(data.num_markers), hz(data.num_markers);
-        for (int i = 0; i < data.num_markers; ++i) {
-            hx[i] = data.reference_positions[i][0];
-            hy[i] = data.reference_positions[i][1];
-            hz[i] = data.reference_positions[i][2];
-        }
-        amrex::Gpu::copy(amrex::Gpu::hostToDevice, hx.begin(), hx.end(), data.pos_x.begin());
-        amrex::Gpu::copy(amrex::Gpu::hostToDevice, hy.begin(), hy.end(), data.pos_y.begin());
-        amrex::Gpu::copy(amrex::Gpu::hostToDevice, hz.begin(), hz.end(), data.pos_z.begin());
+    for (int i = 0; i < data.num_markers; ++i) {
+        data.pos_x[i] = data.reference_positions[i][0];
+        data.pos_y[i] = data.reference_positions[i][1];
+        data.pos_z[i] = data.reference_positions[i][2];
     }
 
     amrex::Print() << "Initialized external geometry with " << data.num_markers
@@ -156,17 +149,11 @@ inline void UpdateExternalGeometryPositions(
         data.current_positions
     );
 
-    // Copy to GPU vectors using bulk transfer
-    {
-        amrex::Vector<amrex::Real> hx(data.num_markers), hy(data.num_markers), hz(data.num_markers);
-        for (int i = 0; i < data.num_markers; ++i) {
-            hx[i] = data.current_positions[i][0];
-            hy[i] = data.current_positions[i][1];
-            hz[i] = data.current_positions[i][2];
-        }
-        amrex::Gpu::copy(amrex::Gpu::hostToDevice, hx.begin(), hx.end(), data.pos_x.begin());
-        amrex::Gpu::copy(amrex::Gpu::hostToDevice, hy.begin(), hy.end(), data.pos_y.begin());
-        amrex::Gpu::copy(amrex::Gpu::hostToDevice, hz.begin(), hz.end(), data.pos_z.begin());
+    // Update pinned host arrays (no explicit copy needed; GPU reads pinned memory directly)
+    for (int i = 0; i < data.num_markers; ++i) {
+        data.pos_x[i] = data.current_positions[i][0];
+        data.pos_y[i] = data.current_positions[i][1];
+        data.pos_z[i] = data.current_positions[i][2];
     }
 }
 
