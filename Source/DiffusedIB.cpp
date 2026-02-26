@@ -515,7 +515,43 @@ void mParticle::InitParticles(const Vector<Real>& x,
 
             // Set marker count from file
             Ml = ext_data.num_markers;
-            dv = h * h * h;  // Approximate marker volume
+
+            // For surface markers from a vertex file, dv = h^3 over-applies the IB
+            // penalty force when the marker spacing d_nn is finer than the grid (d_nn < h).
+            // Each Eulerian cell receives contributions from ~(h/d_nn)^2 markers, resulting
+            // in ~(h/d_nn)^2 x overcorrection and numerical blow-up.
+            //
+            // Correct surface IB formulation: dv = h * d_nn^2
+            //   - d_nn^2 is the area element represented by each marker
+            //   - h is the IB layer thickness (one cell wide)
+            // When d_nn = h this reduces to h^3 (same as volume markers).
+            //
+            // Estimate d_nn from average nearest-neighbor distance in the xz plane
+            // (markers are on a surface, y-coordinate is near-zero).
+            {
+                const auto& px = ext_data.pos_x;
+                const auto& pz = ext_data.pos_z;
+                const int stride = std::max(1, Ml / 200);  // sample up to 200 markers
+                Real d_sum = 0.0;
+                int n_sampled = 0;
+                for (int si = 0; si < Ml; si += stride) {
+                    Real min_d2 = 1.0e30;
+                    for (int sj = 0; sj < Ml; ++sj) {
+                        if (sj == si) continue;
+                        Real ddx = px[si] - px[sj];
+                        Real ddz = pz[si] - pz[sj];
+                        Real d2 = ddx*ddx + ddz*ddz;
+                        if (d2 < min_d2) min_d2 = d2;
+                    }
+                    d_sum += std::sqrt(min_d2);
+                    ++n_sampled;
+                }
+                Real d_nn = (n_sampled > 0) ? d_sum / n_sampled : h;
+                dv = h * d_nn * d_nn;
+                amrex::Print() << "[DiffusedIB] External geometry: N=" << Ml
+                               << " d_nn=" << d_nn << " h=" << h
+                               << " dv=" << dv << " (h^3=" << h*h*h << ")\n";
+            }
 
             // For external geometry, we don't use phiK/thetaK - leave them empty
             // InitialWithLargrangianPoints will use the stored positions instead
