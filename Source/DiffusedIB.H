@@ -159,6 +159,8 @@ public:
 
     void VelocityCorrection(amrex::MultiFab &Euler, amrex::MultiFab &EulerForce, Real dt) const;
 
+    void SetExternalGeometryMarkerVelocities(const kernel& current_kernel);
+
     void UpdateParticles(int iStep, Real time, const MultiFab& Euler_old, const MultiFab& Euler, MultiFab& phi_nodal, MultiFab& pvf, Real dt);
 
     void DoParticleCollision(int model);

@@ -40,6 +40,9 @@ struct ExternalGeometryData {
     amrex::Gpu::PinnedVector<amrex::Real> pos_x;  // Pinned memory: host-writeable, GPU-readable
     amrex::Gpu::PinnedVector<amrex::Real> pos_y;
     amrex::Gpu::PinnedVector<amrex::Real> pos_z;
+    amrex::Gpu::PinnedVector<amrex::Real> vel_x;  // Marker surface velocity (omega x r)
+    amrex::Gpu::PinnedVector<amrex::Real> vel_y;
+    amrex::Gpu::PinnedVector<amrex::Real> vel_z;
     WingKinematicsParams kinematics;
     bool do_prescribed_motion = false;
     int num_markers = 0;
@@ -110,6 +113,10 @@ inline void InitializeExternalGeometry(
     data.pos_x.resize(data.num_markers);
     data.pos_y.resize(data.num_markers);
     data.pos_z.resize(data.num_markers);
+    // Velocities start at zero (wing is stationary at t=0)
+    data.vel_x.resize(data.num_markers, 0.0);
+    data.vel_y.resize(data.num_markers, 0.0);
+    data.vel_z.resize(data.num_markers, 0.0);
     for (int i = 0; i < data.num_markers; ++i) {
         data.pos_x[i] = data.reference_positions[i][0];
         data.pos_y[i] = data.reference_positions[i][1];
@@ -129,12 +136,17 @@ inline void InitializeExternalGeometry(
 }
 
 /**
- * Update external geometry positions based on kinematics.
- * Call this at the beginning of each timestep.
+ * Update external geometry positions and surface velocities based on kinematics.
+ * Call this at each timestep before InteractWithEuler.
+ *
+ * @param data   External geometry data to update
+ * @param time   Current simulation time
+ * @param dt     Timestep size (used for finite-difference velocity estimate)
  */
 inline void UpdateExternalGeometryPositions(
     ExternalGeometryData& data,
-    amrex::Real time)
+    amrex::Real time,
+    amrex::Real dt)
 {
     if (!data.do_prescribed_motion) {
         return;
@@ -149,11 +161,27 @@ inline void UpdateExternalGeometryPositions(
         data.current_positions
     );
 
-    // Update pinned host arrays (no explicit copy needed; GPU reads pinned memory directly)
+    // Update pinned position arrays (GPU reads pinned memory directly)
     for (int i = 0; i < data.num_markers; ++i) {
         data.pos_x[i] = data.current_positions[i][0];
         data.pos_y[i] = data.current_positions[i][1];
         data.pos_z[i] = data.current_positions[i][2];
+    }
+
+    // Compute and store surface velocities via finite difference: v = (pos(t+dt/2) - pos(t-dt/2)) / dt
+    // These are used in InteractWithEuler to drive fluid via the IB penalty force.
+    amrex::Vector<amrex::RealVect> velocities;
+    ComputeMarkerVelocities(
+        time, dt,
+        data.reference_positions,
+        data.hinge,
+        data.kinematics,
+        velocities
+    );
+    for (int i = 0; i < data.num_markers; ++i) {
+        data.vel_x[i] = velocities[i][0];
+        data.vel_y[i] = velocities[i][1];
+        data.vel_z[i] = velocities[i][2];
     }
 }
 

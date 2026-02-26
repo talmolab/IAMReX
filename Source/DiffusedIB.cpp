@@ -382,6 +382,9 @@ void mParticle::InteractWithEuler(MultiFab &EulerVel,
             kernel.ib_moment.scale(0.0); // clear kernel ib_moment
 
             VelocityInterpolation(EulerVel, type);
+            // For geometry_type=4: subtract wing surface velocity from U_Marker (= U_fluid)
+            // so ComputeLagrangianForce computes F = (0 - (U_fluid - U_wing))/dt = (U_wing - U_fluid)/dt
+            SetExternalGeometryMarkerVelocities(kernel);
             ComputeLagrangianForce(dt, kernel);
             ForceSpreading(EulerForceTmp, kernel, type);
             MultiFab::Add(EulerForce, EulerForceTmp, 0, 0, 3, EulerForce.nGrow());
@@ -893,9 +896,52 @@ void mParticle::ResetLargrangianPoints()
     }
 }
 
+void mParticle::SetExternalGeometryMarkerVelocities(const kernel& current_kernel)
+{
+    if (current_kernel.geometry_type != 4) { return; }
+
+    // Find matching external geometry by marker count
+    int ext_idx = -1;
+    for (std::size_t i = 0; i < IAMReX::g_external_geometries.size(); ++i) {
+        if (IAMReX::g_external_geometries[i].num_markers == current_kernel.ml) {
+            ext_idx = static_cast<int>(i);
+            break;
+        }
+    }
+    if (ext_idx < 0) { return; }
+
+    const auto* vel_x = IAMReX::g_external_geometries[ext_idx].vel_x.dataPtr();
+    const auto* vel_y = IAMReX::g_external_geometries[ext_idx].vel_y.dataPtr();
+    const auto* vel_z = IAMReX::g_external_geometries[ext_idx].vel_z.dataPtr();
+    const int nm = IAMReX::g_external_geometries[ext_idx].num_markers;
+
+    // Called after VelocityInterpolation, so U/V/W_Marker currently hold U_fluid at each marker.
+    // Subtract the prescribed wing surface velocity so that ComputeLagrangianForce computes:
+    //   F = (kernel.velocity + omega x r - U_Marker) / dt
+    //     = (0 + 0 - (U_fluid - U_wing)) / dt
+    //     = (U_wing - U_fluid) / dt   <-- correct IB penalty force
+    for (mParIter pti(*mContainer, LOCAL_LEVEL); pti.isValid(); ++pti) {
+        const Long np = pti.numParticles();
+        if (np == 0) { continue; }
+        auto& attri = pti.GetAttribs();
+        auto* Up = attri[P_ATTR::U_Marker].data();
+        auto* Vp = attri[P_ATTR::V_Marker].data();
+        auto* Wp = attri[P_ATTR::W_Marker].data();
+        auto const* particles = pti.GetArrayOfStructs().data();
+        amrex::ParallelFor(np, [=] AMREX_GPU_DEVICE (int i) noexcept {
+            auto id = particles[i].id();
+            if (id > 0 && id <= nm) {
+                Up[i] -= vel_x[id - 1];
+                Vp[i] -= vel_y[id - 1];
+                Wp[i] -= vel_z[id - 1];
+            }
+        });
+    }
+}
+
 void mParticle::UpdateParticles(int iStep,
                                 Real time,
-                                const MultiFab& Euler_old, 
+                                const MultiFab& Euler_old,
                                 const MultiFab& Euler,
                                 MultiFab& phi_nodal, 
                                 MultiFab& pvf, 
@@ -906,9 +952,10 @@ void mParticle::UpdateParticles(int iStep,
     auto UpdateParticlesStart = ParallelDescriptor::second();
 
     // Update prescribed motion for external geometries (geometry_type = 4)
+    // Also computes vel_x/y/z (surface velocity) for use in InteractWithEuler.
     for (auto& ext_data : IAMReX::g_external_geometries) {
         if (ext_data.do_prescribed_motion) {
-            IAMReX::UpdateExternalGeometryPositions(ext_data, time);
+            IAMReX::UpdateExternalGeometryPositions(ext_data, time, dt);
         }
     }
 
