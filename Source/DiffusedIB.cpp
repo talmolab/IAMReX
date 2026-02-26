@@ -513,6 +513,15 @@ void mParticle::InitParticles(const Vector<Real>& x,
             // Store for later use
             IAMReX::g_external_geometries.push_back(ext_data);
 
+            // Register cleanup to free GPU (pinned) memory before AMReX shuts down CUDA.
+            // Without this, global destructor teardown calls cudaFreeHost after CUDA has
+            // been finalized, which triggers "pure virtual method called" via the Arena vtable.
+            static bool cleanup_registered = false;
+            if (!cleanup_registered) {
+                amrex::ExecOnFinalize([]() { IAMReX::g_external_geometries.clear(); });
+                cleanup_registered = true;
+            }
+
             // Set marker count from file
             Ml = ext_data.num_markers;
 
