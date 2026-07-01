@@ -535,10 +535,15 @@ void mParticle::InitParticles(const Vector<Real>& x,
             //   - h is the IB layer thickness (one cell wide)
             // When d_nn = h this reduces to h^3 (same as volume markers).
             //
-            // Estimate d_nn from average nearest-neighbor distance in the xz plane
-            // (markers are on a surface, y-coordinate is near-zero).
+            // Estimate d_nn from the average nearest-neighbor distance in 3D. The wing is a
+            // thin planar sheet whose flat axis depends on the axis convention (pre-T2a the
+            // wing lay in the xz plane with y~const; the van Veen convention lays it in the
+            // xy plane with z~const). Projecting onto a FIXED plane collapses the in-plane
+            // span for the other orientation (coincident points -> d_nn=0 -> dv=0 -> zero IB
+            // force), so use the full 3D distance, which is orientation-invariant.
             {
                 const auto& px = ext_data.pos_x;
+                const auto& py = ext_data.pos_y;
                 const auto& pz = ext_data.pos_z;
                 const int stride = std::max(1, Ml / 200);  // sample up to 200 markers
                 Real d_sum = 0.0;
@@ -548,8 +553,9 @@ void mParticle::InitParticles(const Vector<Real>& x,
                     for (int sj = 0; sj < Ml; ++sj) {
                         if (sj == si) continue;
                         Real ddx = px[si] - px[sj];
+                        Real ddy = py[si] - py[sj];
                         Real ddz = pz[si] - pz[sj];
-                        Real d2 = ddx*ddx + ddz*ddz;
+                        Real d2 = ddx*ddx + ddy*ddy + ddz*ddz;
                         if (d2 < min_d2) min_d2 = d2;
                     }
                     d_sum += std::sqrt(min_d2);
