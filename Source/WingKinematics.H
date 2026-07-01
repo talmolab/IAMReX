@@ -1,8 +1,17 @@
 /*
  * WingKinematics.H - Prescribed flapping wing kinematics
  *
- * Implements van Veen et al. (2022) sinusoidal kinematics for insect wing motion.
- * Uses 3-angle Euler rotation (ZYX convention): stroke (φ), deviation (θ), pitch (α)
+ * Implements van Veen et al. (2022) sinusoidal kinematics for insect wing motion in the
+ * van Veen / Bomphrey axis convention (mosquito-cfd Tier T2a, issue #1):
+ *   x = chord (toward trailing edge), y = span (toward tip), z = wing-normal / vertical.
+ * Euler rotation R = Rz(phi) * Ry(alpha) * Rx(theta):
+ *   stroke phi about the lab vertical z (perpendicular to the span, so the span-tip sweeps),
+ *   pitch/angle-of-attack alpha about the span y, deviation theta about the chord x.
+ * (van Veen labels stroke gamma and pitch phi; here stroke=phi, pitch=alpha — same composition.)
+ *
+ * The Python mirror of this rotation is mosquito_cfd.benchmarks.wing_kinematics.rotation_matrix,
+ * pinned by test_python_mirror_matches_design_composition; ANY change to this rotation order MUST
+ * update that test (and the fork-side conformance test). See docs/coordinate-convention.md.
  *
  * Reference:
  *   van Veen, W.G., van Leeuwen, J.L., & Muijres, F.T. (2022).
@@ -66,34 +75,36 @@ inline void ComputeEulerAngles(
 }
 
 /**
- * Compute 3x3 rotation matrix from Euler angles.
+ * Compute 3x3 rotation matrix from Euler angles (van Veen / Bomphrey convention, T2a).
  *
- * Rotation order: R = Rz(φ) * Ry(θ) * Rx(α)  (ZYX convention)
+ * Rotation order: R = Rz(phi) * Ry(alpha) * Rx(theta)
+ *   stroke phi about lab vertical z, pitch alpha about span y, deviation theta about chord x.
  *
- * This transforms from wing-fixed frame to lab frame.
+ * This transforms from the wing-fixed (body) frame to the lab frame. Mirrored in Python by
+ * mosquito_cfd.benchmarks.wing_kinematics.rotation_matrix (keep in lock-step).
  */
 inline void ComputeRotationMatrix(
-    amrex::Real phi,    // stroke angle (rad)
-    amrex::Real alpha,  // pitch angle (rad)
-    amrex::Real theta,  // deviation angle (rad)
+    amrex::Real phi,    // stroke angle (rad), about lab z
+    amrex::Real alpha,  // pitch angle (rad), about span y
+    amrex::Real theta,  // deviation angle (rad), about chord x
     amrex::Real R[3][3])
 {
     amrex::Real cp = std::cos(phi),   sp = std::sin(phi);
     amrex::Real ca = std::cos(alpha), sa = std::sin(alpha);
     amrex::Real ct = std::cos(theta), st = std::sin(theta);
 
-    // R = Rz(phi) * Ry(theta) * Rx(alpha)
-    R[0][0] = cp * ct;
-    R[0][1] = cp * st * sa - sp * ca;
-    R[0][2] = cp * st * ca + sp * sa;
+    // R = Rz(phi) * Ry(alpha) * Rx(theta)
+    R[0][0] = cp * ca;
+    R[0][1] = cp * sa * st - sp * ct;
+    R[0][2] = cp * sa * ct + sp * st;
 
-    R[1][0] = sp * ct;
-    R[1][1] = sp * st * sa + cp * ca;
-    R[1][2] = sp * st * ca - cp * sa;
+    R[1][0] = sp * ca;
+    R[1][1] = sp * sa * st + cp * ct;
+    R[1][2] = sp * sa * ct - cp * st;
 
-    R[2][0] = -st;
-    R[2][1] = ct * sa;
-    R[2][2] = ct * ca;
+    R[2][0] = -sa;
+    R[2][1] = ca * st;
+    R[2][2] = ca * ct;
 }
 
 /**
