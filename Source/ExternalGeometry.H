@@ -183,28 +183,6 @@ inline void UpdateExternalGeometryPositions(
         data.vel_y[i] = velocities[i][1];
         data.vel_z[i] = velocities[i][2];
     }
-
-    // [T2a DBG] Trace prescribed-motion marker velocities to localize the inert-IB bug.
-    {
-        static int s_dbg_call = 0;
-        if ((s_dbg_call++ % 100) == 0) {
-            amrex::Real vmax = 0.0, pspan = 0.0;
-            for (int i = 0; i < data.num_markers; ++i) {
-                amrex::Real s = std::sqrt(data.vel_x[i]*data.vel_x[i]
-                                        + data.vel_y[i]*data.vel_y[i]
-                                        + data.vel_z[i]*data.vel_z[i]);
-                if (s > vmax) vmax = s;
-            }
-            // marker-0 position + velocity, and max marker speed this call
-            amrex::Print() << "[T2a DBG ExtGeom] time=" << time << " dt=" << dt
-                           << " nm=" << data.num_markers
-                           << " pos0=(" << data.pos_x[0] << "," << data.pos_y[0]
-                           << "," << data.pos_z[0] << ")"
-                           << " vel0=(" << data.vel_x[0] << "," << data.vel_y[0]
-                           << "," << data.vel_z[0] << ")"
-                           << " max|vel|=" << vmax << "\n";
-        }
-    }
 }
 
 /**
